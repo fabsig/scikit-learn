@@ -508,10 +508,11 @@ class TobitLossFunction(RegressionLossFunction):
                     - np.sum(norm.logcdf(diff[indl]))
                     - np.sum(norm.logcdf(-diff[indu])))
         else:
-            loss = ((np.sum(sample_weight[indmid]
-                    * ((diff[indmid] ** 2.0) / 2 + const))
-                    - np.sum(sample_weight[indl] * norm.logcdf(diff[indl]))
-                    - np.sum(sample_weight[indu] * norm.logcdf(-diff[indu]))))
+            loss = (((np.sum(sample_weight[indmid]
+                     * ((diff[indmid] ** 2.0) / 2 + const))
+                     - np.sum(sample_weight[indl] * norm.logcdf(diff[indl]))
+                     - np.sum(sample_weight[indu] * norm.logcdf(-diff[indu])))) 
+                    / sample_weight.sum())
         return loss
 
     def negative_gradient(self, y, pred, sample_weight, **kargs):
@@ -859,7 +860,7 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
                  random_state, alpha=0.9, verbose=0, max_leaf_nodes=None,
                  warm_start=False, presort='auto',
                  validation_fraction=0.1, n_iter_no_change=None,
-                 tol=1e-4, sigma=1, yl=0, yu=1):
+                 tol=1e-4, sigma=1, yl=0, yu=1, NewtonWeights=True):
 
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
@@ -886,9 +887,11 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
         self.sigma = sigma
         self.yl = yl
         self.yu = yu
+        self.NewtonWeights=NewtonWeights
 
     def _fit_stage(self, i, X, y, y_pred, sample_weight, sample_mask,
-                   random_state, X_idx_sorted, X_csc=None, X_csr=None):
+                   random_state, X_idx_sorted, X_csc=None, X_csr=None,
+                   NewtonWeights=True):
         """Fit another stage of ``n_classes_`` trees to the boosting model. """
 
         assert sample_mask.dtype == np.bool
@@ -928,15 +931,16 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
                 tree.fit(X, residual, sample_weight=sample_weight,
                          check_input=False, X_idx_sorted=X_idx_sorted)
 
-            # update tree leaves
-            if X_csr is not None:
-                loss.update_terminal_regions(tree.tree_, X_csr, y, residual, y_pred,
-                                             sample_weight, sample_mask,
-                                             self.learning_rate, k=k)
-            else:
-                loss.update_terminal_regions(tree.tree_, X, y, residual, y_pred,
-                                             sample_weight, sample_mask,
-                                             self.learning_rate, k=k)
+            if NewtonWeights:
+                # update tree leaves ##CHANGE
+                if X_csr is not None:
+                    loss.update_terminal_regions(tree.tree_, X_csr, y, residual, y_pred,
+                                                 sample_weight, sample_mask,
+                                                 self.learning_rate, k=k)
+                else:
+                    loss.update_terminal_regions(tree.tree_, X, y, residual, y_pred,
+                                                 sample_weight, sample_mask,
+                                                 self.learning_rate, k=k)
 
             # add tree to ensemble
             self.estimators_[i, k] = tree
@@ -1267,7 +1271,7 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
             # fit next stage of trees
             y_pred = self._fit_stage(i, X, y, y_pred, sample_weight,
                                      sample_mask, random_state, X_idx_sorted,
-                                     X_csc, X_csr)
+                                     X_csc, X_csr, self.NewtonWeights)
 
             # track deviance (= loss)
             if do_oob:
@@ -1675,7 +1679,7 @@ class GradientBoostingClassifier(BaseGradientBoosting, ClassifierMixin):
                  random_state=None, max_features=None, verbose=0,
                  max_leaf_nodes=None, warm_start=False,
                  presort='auto', validation_fraction=0.1,
-                 n_iter_no_change=None, tol=1e-4):
+                 n_iter_no_change=None, tol=1e-4, NewtonWeights=True):
 
         super(GradientBoostingClassifier, self).__init__(
             loss=loss, learning_rate=learning_rate, n_estimators=n_estimators,
@@ -1690,7 +1694,8 @@ class GradientBoostingClassifier(BaseGradientBoosting, ClassifierMixin):
             min_impurity_split=min_impurity_split,
             warm_start=warm_start, presort=presort,
             validation_fraction=validation_fraction,
-            n_iter_no_change=n_iter_no_change, tol=tol)
+            n_iter_no_change=n_iter_no_change, tol=tol,
+            NewtonWeights=NewtonWeights)
 
     def _validate_y(self, y, sample_weight):
         check_classification_targets(y)
@@ -2143,7 +2148,8 @@ class GradientBoostingRegressor(BaseGradientBoosting, RegressorMixin):
                  min_impurity_split=None, init=None, random_state=None,
                  max_features=None, alpha=0.9, verbose=0, max_leaf_nodes=None,
                  warm_start=False, presort='auto', validation_fraction=0.1,
-                 n_iter_no_change=None, tol=1e-4, sigma=1, yl=0, yu=1):
+                 n_iter_no_change=None, tol=1e-4, sigma=1, yl=0, yu=1,
+                 NewtonWeights=True):
 
         super(GradientBoostingRegressor, self).__init__(
             loss=loss, learning_rate=learning_rate, n_estimators=n_estimators,
@@ -2158,7 +2164,7 @@ class GradientBoostingRegressor(BaseGradientBoosting, RegressorMixin):
             max_leaf_nodes=max_leaf_nodes, warm_start=warm_start,
             presort=presort, validation_fraction=validation_fraction,
             n_iter_no_change=n_iter_no_change, tol=tol, sigma=sigma,
-            yl=yl, yu=yu)
+            yl=yl, yu=yu, NewtonWeights=NewtonWeights)
 
     def predict(self, X):
         """Predict regression target for X.
