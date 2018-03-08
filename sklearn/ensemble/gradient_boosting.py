@@ -931,6 +931,8 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
             if NewtonBoost:
                 hessian = loss.hessian(y, y_pred, residual, k=k,
                                               sample_weight=sample_weight)
+                sample_weight = sample_weight * hessian/2
+                residual = residual / hessian
 
             # induce regression tree on residuals
             tree = DecisionTreeRegressor(
