@@ -236,6 +236,20 @@ class LossFunction(six.with_metaclass(ABCMeta, object)):
             The predictions.
         """
 
+    @abstractmethod
+    def hessian(self, y, pred, residual, **kargs):
+        """Compute the second derivative.
+
+        Parameters
+        ---------
+        y : np.ndarray, shape=(n,)
+            The target labels.
+        y_pred : np.ndarray, shape=(n,):
+            The predictions.
+        residual : np.ndarray, shape=(n,):
+            negative gradient.
+        """
+
     def update_terminal_regions(self, tree, X, y, residual, y_pred,
                                 sample_weight, sample_mask,
                                 learning_rate=1.0, k=0, NewtonWeights=True):
@@ -624,6 +638,10 @@ class BinomialDeviance(ClassificationLossFunction):
         """Compute the residual (= negative gradient). """
         return y - expit(pred.ravel())
 
+    def hessian(self, y, pred, residual, **kargs):
+        """Compute the second derivative """
+        return (y - residual) * (1 - y + residual)
+
     def _update_terminal_region(self, tree, terminal_regions, leaf, X, y,
                                 residual, pred, sample_weight):
         """Make a single Newton-Raphson step.
@@ -892,18 +910,24 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
 
     def _fit_stage(self, i, X, y, y_pred, sample_weight, sample_mask,
                    random_state, X_idx_sorted, X_csc=None, X_csr=None,
-                   NewtonWeights=True):
+                   NewtonWeights=True, NewtonBoost=False):
         """Fit another stage of ``n_classes_`` trees to the boosting model. """
 
         assert sample_mask.dtype == np.bool
         loss = self.loss_
         original_y = y
 
+        #No need to update weights if Newton-Raphson boosting is used
+        if NewtonBoost: NewtonWeights=False
+
         for k in range(loss.K):
             if loss.is_multi_class:
                 y = np.array(original_y == k, dtype=np.float64)
 
             residual = loss.negative_gradient(y, y_pred, k=k,
+                                              sample_weight=sample_weight)
+            if NewtonBoost:
+                hessian = loss.hessian(y, y_pred, residual, k=k,
                                               sample_weight=sample_weight)
 
             # induce regression tree on residuals
