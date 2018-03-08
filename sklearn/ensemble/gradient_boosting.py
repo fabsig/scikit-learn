@@ -879,7 +879,8 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
                  random_state, alpha=0.9, verbose=0, max_leaf_nodes=None,
                  warm_start=False, presort='auto',
                  validation_fraction=0.1, n_iter_no_change=None,
-                 tol=1e-4, sigma=1, yl=0, yu=1, NewtonWeights=True):
+                 tol=1e-4, sigma=1, yl=0, yu=1, NewtonWeights=True,
+                 NewtonBoost=False):
 
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
@@ -907,6 +908,7 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
         self.yl = yl
         self.yu = yu
         self.NewtonWeights=NewtonWeights
+        self.NewtonBoost=NewtonBoost
 
     def _fit_stage(self, i, X, y, y_pred, sample_weight, sample_mask,
                    random_state, X_idx_sorted, X_csc=None, X_csr=None,
@@ -1297,7 +1299,8 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
             # fit next stage of trees
             y_pred = self._fit_stage(i, X, y, y_pred, sample_weight,
                                      sample_mask, random_state, X_idx_sorted,
-                                     X_csc, X_csr, self.NewtonWeights)
+                                     X_csc, X_csr, self.NewtonWeights,
+                                     self.NewtonBoost)
 
             # track deviance (= loss)
             if do_oob:
@@ -1705,7 +1708,8 @@ class GradientBoostingClassifier(BaseGradientBoosting, ClassifierMixin):
                  random_state=None, max_features=None, verbose=0,
                  max_leaf_nodes=None, warm_start=False,
                  presort='auto', validation_fraction=0.1,
-                 n_iter_no_change=None, tol=1e-4, NewtonWeights=True):
+                 n_iter_no_change=None, tol=1e-4, NewtonWeights=True,
+                 NewtonBoost=False):
 
         super(GradientBoostingClassifier, self).__init__(
             loss=loss, learning_rate=learning_rate, n_estimators=n_estimators,
@@ -1721,7 +1725,7 @@ class GradientBoostingClassifier(BaseGradientBoosting, ClassifierMixin):
             warm_start=warm_start, presort=presort,
             validation_fraction=validation_fraction,
             n_iter_no_change=n_iter_no_change, tol=tol,
-            NewtonWeights=NewtonWeights)
+            NewtonWeights=NewtonWeights, NewtonBoost=NewtonBoost)
 
     def _validate_y(self, y, sample_weight):
         check_classification_targets(y)
@@ -2175,7 +2179,7 @@ class GradientBoostingRegressor(BaseGradientBoosting, RegressorMixin):
                  max_features=None, alpha=0.9, verbose=0, max_leaf_nodes=None,
                  warm_start=False, presort='auto', validation_fraction=0.1,
                  n_iter_no_change=None, tol=1e-4, sigma=1, yl=0, yu=1,
-                 NewtonWeights=True):
+                 NewtonWeights=True, NewtonBoost=False):
 
         super(GradientBoostingRegressor, self).__init__(
             loss=loss, learning_rate=learning_rate, n_estimators=n_estimators,
@@ -2190,7 +2194,7 @@ class GradientBoostingRegressor(BaseGradientBoosting, RegressorMixin):
             max_leaf_nodes=max_leaf_nodes, warm_start=warm_start,
             presort=presort, validation_fraction=validation_fraction,
             n_iter_no_change=n_iter_no_change, tol=tol, sigma=sigma,
-            yl=yl, yu=yu, NewtonWeights=NewtonWeights)
+            yl=yl, yu=yu, NewtonWeights=NewtonWeights, NewtonBoost=NewtonBoost)
 
     def predict(self, X):
         """Predict regression target for X.
