@@ -318,7 +318,7 @@ class LeastSquaresError(RegressionLossFunction):
 
     def update_terminal_regions(self, tree, X, y, residual, y_pred,
                                 sample_weight, sample_mask,
-                                learning_rate=1.0, k=0):
+                                learning_rate=1.0, k=0, NewtonWeights=True):
         """Least squares does not need to update terminal regions.
 
         But it has to update the predictions.
