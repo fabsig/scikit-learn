@@ -87,6 +87,7 @@ class BaseDecisionTree(six.with_metaclass(ABCMeta, BaseEstimator)):
                  min_samples_split,
                  min_samples_leaf,
                  min_weight_fraction_leaf,
+                 min_weight_leaf,
                  max_features,
                  max_leaf_nodes,
                  random_state,
@@ -100,6 +101,7 @@ class BaseDecisionTree(six.with_metaclass(ABCMeta, BaseEstimator)):
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
         self.min_weight_fraction_leaf = min_weight_fraction_leaf
+        self.min_weight_leaf = min_weight_leaf
         self.max_features = max_features
         self.random_state = random_state
         self.max_leaf_nodes = max_leaf_nodes
@@ -267,13 +269,14 @@ class BaseDecisionTree(six.with_metaclass(ABCMeta, BaseEstimator)):
             else:
                 sample_weight = expanded_class_weight
 
-        # Set min_weight_leaf from min_weight_fraction_leaf
-        if sample_weight is None:
-            min_weight_leaf = (self.min_weight_fraction_leaf *
-                               n_samples)
-        else:
-            min_weight_leaf = (self.min_weight_fraction_leaf *
-                               np.sum(sample_weight))
+        # Set min_weight_leaf from min_weight_fraction_leaf if min_weight_leaf is 0
+        if self.min_weight_leaf == 0.:
+            if sample_weight is None:
+                self.min_weight_leaf = (self.min_weight_fraction_leaf *
+                                   n_samples)
+            else:
+                self.min_weight_leaf = (self.min_weight_fraction_leaf *
+                                   np.sum(sample_weight))
 
         if self.min_impurity_split is not None:
             warnings.warn("The min_impurity_split parameter is deprecated and"
@@ -339,7 +342,7 @@ class BaseDecisionTree(six.with_metaclass(ABCMeta, BaseEstimator)):
             splitter = SPLITTERS[self.splitter](criterion,
                                                 self.max_features_,
                                                 min_samples_leaf,
-                                                min_weight_leaf,
+                                                self.min_weight_leaf,
                                                 random_state,
                                                 self.presort)
 
@@ -349,14 +352,14 @@ class BaseDecisionTree(six.with_metaclass(ABCMeta, BaseEstimator)):
         if max_leaf_nodes < 0:
             builder = DepthFirstTreeBuilder(splitter, min_samples_split,
                                             min_samples_leaf,
-                                            min_weight_leaf,
+                                            self.min_weight_leaf,
                                             max_depth,
                                             self.min_impurity_decrease,
                                             min_impurity_split)
         else:
             builder = BestFirstTreeBuilder(splitter, min_samples_split,
                                            min_samples_leaf,
-                                           min_weight_leaf,
+                                           self.min_weight_leaf,
                                            max_depth,
                                            max_leaf_nodes,
                                            self.min_impurity_decrease,
@@ -727,6 +730,7 @@ class DecisionTreeClassifier(BaseDecisionTree, ClassifierMixin):
                  min_samples_split=2,
                  min_samples_leaf=1,
                  min_weight_fraction_leaf=0.,
+                 min_weight_leaf=0.,
                  max_features=None,
                  random_state=None,
                  max_leaf_nodes=None,
@@ -741,6 +745,7 @@ class DecisionTreeClassifier(BaseDecisionTree, ClassifierMixin):
             min_samples_split=min_samples_split,
             min_samples_leaf=min_samples_leaf,
             min_weight_fraction_leaf=min_weight_fraction_leaf,
+            min_weight_leaf=min_weight_leaf,
             max_features=max_features,
             max_leaf_nodes=max_leaf_nodes,
             class_weight=class_weight,
@@ -1064,6 +1069,7 @@ class DecisionTreeRegressor(BaseDecisionTree, RegressorMixin):
                  min_samples_split=2,
                  min_samples_leaf=1,
                  min_weight_fraction_leaf=0.,
+                 min_weight_leaf=0.,
                  max_features=None,
                  random_state=None,
                  max_leaf_nodes=None,
@@ -1075,8 +1081,9 @@ class DecisionTreeRegressor(BaseDecisionTree, RegressorMixin):
             splitter=splitter,
             max_depth=max_depth,
             min_samples_split=min_samples_split,
-            min_samples_leaf=min_samples_leaf,
             min_weight_fraction_leaf=min_weight_fraction_leaf,
+            min_samples_leaf=min_samples_leaf,
+            min_weight_leaf=min_weight_leaf,
             max_features=max_features,
             max_leaf_nodes=max_leaf_nodes,
             random_state=random_state,
@@ -1285,6 +1292,7 @@ class ExtraTreeClassifier(DecisionTreeClassifier):
                  min_samples_split=2,
                  min_samples_leaf=1,
                  min_weight_fraction_leaf=0.,
+                 min_weight_leaf=0.,
                  max_features="auto",
                  random_state=None,
                  max_leaf_nodes=None,
@@ -1298,6 +1306,7 @@ class ExtraTreeClassifier(DecisionTreeClassifier):
             min_samples_split=min_samples_split,
             min_samples_leaf=min_samples_leaf,
             min_weight_fraction_leaf=min_weight_fraction_leaf,
+            min_weight_leaf=min_weight_leaf,
             max_features=max_features,
             max_leaf_nodes=max_leaf_nodes,
             class_weight=class_weight,
@@ -1448,6 +1457,7 @@ class ExtraTreeRegressor(DecisionTreeRegressor):
                  min_samples_split=2,
                  min_samples_leaf=1,
                  min_weight_fraction_leaf=0.,
+                 min_weight_leaf=0.,
                  max_features="auto",
                  random_state=None,
                  min_impurity_decrease=0.,
@@ -1460,6 +1470,7 @@ class ExtraTreeRegressor(DecisionTreeRegressor):
             min_samples_split=min_samples_split,
             min_samples_leaf=min_samples_leaf,
             min_weight_fraction_leaf=min_weight_fraction_leaf,
+            min_weight_leaf=min_weight_leaf,
             max_features=max_features,
             max_leaf_nodes=max_leaf_nodes,
             min_impurity_decrease=min_impurity_decrease,

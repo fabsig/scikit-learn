@@ -104,6 +104,25 @@ class MeanEstimator(object):
         return y
 
 
+class LogMeanEstimator(object):
+    """An estimator for the logarithm of the mean of the training targets."""
+    def fit(self, X, y, sample_weight=None):
+        if (y < 0).any():
+            raise ValueError('y contains negative numbers.')
+        if sample_weight is None:
+            self.logmean = np.log(np.max([np.mean(y),1e-20]))
+        else:
+            self.logmean = np.log(np.max([np.average(y, weights=sample_weight),
+                                          1e-20]))
+
+    def predict(self, X):
+        check_is_fitted(self, 'logmean')
+
+        y = np.empty((X.shape[0], 1), dtype=np.float64)
+        y.fill(self.logmean)
+        return y
+
+
 class LogOddsEstimator(object):
     """An estimator predicting the log odds ratio."""
     scale = 1.0
@@ -174,7 +193,7 @@ class ZeroEstimator(object):
 
 
 class TobitEstimator(object):
-    """An estimator predicting the mean of the latent variable
+    """An estimator for the mean of the latent variable
     of the Tobit model."""
     def __init__(self, sigma=1, yl=0, yu=1):
         if not 0 < sigma:
@@ -197,6 +216,34 @@ class TobitEstimator(object):
 
         y = np.empty((X.shape[0], 1), dtype=np.float64)
         y.fill(self.mean)
+        return y
+
+
+class GammaEstimator(object):
+    """An estimator for the logarithm of lambda of the Gamma model."""
+    def __init__(self, gamma=1):
+        if not 0 < gamma:
+            raise ValueError("`sigma` must be larger than 0 but was %r"
+                             % gamma)
+        self.gamma = gamma
+
+    def fit(self, X, y, sample_weight=None):
+        if (y < 0).any():
+            raise ValueError('y contains negative numbers.')
+        if sample_weight is None:
+            self.loglambda = (np.log(self.gamma)
+                            - np.log(np.max([np.mean(y),1e-20])))
+        else:
+            self.loglambda = (np.log(self.gamma)
+                            - np.log(np.max([np.average(y,
+                                                        weights=sample_weight),
+                                              1e-20])))
+
+    def predict(self, X):
+        check_is_fitted(self, 'loglambda')
+
+        y = np.empty((X.shape[0], 1), dtype=np.float64)
+        y.fill(self.loglambda)
         return y
 
 
@@ -252,7 +299,7 @@ class LossFunction(six.with_metaclass(ABCMeta, object)):
 
     def update_terminal_regions(self, tree, X, y, residual, y_pred,
                                 sample_weight, sample_mask,
-                                learning_rate=1.0, k=0, NewtonWeights=True):
+                                learning_rate=1.0, k=0, update_step="hybrid"):
         """Update the terminal regions (=leaves) of the given tree and
         updates the current predictions of the model. Traverses tree
         and invokes template method `_update_terminal_region`.
@@ -283,7 +330,7 @@ class LossFunction(six.with_metaclass(ABCMeta, object)):
         # compute leaf for each sample in ``X``.
         terminal_regions = tree.apply(X)
 
-        if NewtonWeights:
+        if update_step=="hybrid":
             # mask all which are not in sample mask.
             masked_terminal_regions = terminal_regions.copy()
             masked_terminal_regions[~sample_mask] = -1
@@ -332,7 +379,7 @@ class LeastSquaresError(RegressionLossFunction):
 
     def update_terminal_regions(self, tree, X, y, residual, y_pred,
                                 sample_weight, sample_mask,
-                                learning_rate=1.0, k=0, NewtonWeights=True):
+                                learning_rate=1.0, k=0, update_step="hybrid"):
         """Least squares does not need to update terminal regions.
 
         But it has to update the predictions.
@@ -549,6 +596,28 @@ class TobitLossFunction(RegressionLossFunction):
                           - norm.logcdf(-diff[indu])) / sigma)
         return (residual)
 
+    def hessian(self, y, pred, residual, **kargs):
+        """Compute the second derivative """
+        sigma = self.sigma
+        sigma2 = self.sigma ** 2
+        yl = self.yl
+        yu = self.yu
+        diff = (y - pred.ravel())/sigma
+        indl = (y == yl)
+        indu = (y == yu)
+        indmid = (y > yl) & (y < yu)
+        hessian = np.zeros((y.shape[0],), dtype=np.float64)
+        lognpdfl = norm.logpdf(diff[indl])
+        logncdfl = norm.logcdf(diff[indl])
+        lognpdfu = norm.logpdf(diff[indu])
+        logncdfu = norm.logcdf(-diff[indu])
+        hessian[indmid] = 1/sigma2
+        hessian[indl] = (np.exp(lognpdfl - logncdfl) / sigma2 * diff[indl]
+                         + np.exp(2*lognpdfl-2 * logncdfl) / sigma2)
+        hessian[indu] = (- np.exp(lognpdfu-logncdfu)/sigma2 * diff[indu]
+                         + np.exp(2*lognpdfu-2 * logncdfu) / sigma2)
+        return hessian
+
     def _update_terminal_region(self, tree, terminal_regions, leaf, X, y,
                                 residual, pred, sample_weight):
         """Make a single Newton-Raphson step.
@@ -584,11 +653,211 @@ class TobitLossFunction(RegressionLossFunction):
         numerator = np.sum(sample_weight * residual)
         denominator = np.sum(sample_weight * hessian)
 
-        if denominator == 0.0:
+        if denominator < 1e-150:
             tree.value[leaf, 0] = 0.0
         else:
             tree.value[leaf, 0] = numerator / denominator
 
+class PoissonLossFunction(RegressionLossFunction):
+    """Loss function for the Poisson model.
+
+    """
+
+    def __init__(self, n_classes):
+        super(PoissonLossFunction, self).__init__(n_classes)
+
+    def init_estimator(self):
+        return LogMeanEstimator()
+
+    def __call__(self, y, pred, sample_weight=None):
+        constants = [np.log(float(math.factorial(yi))) for yi in y]
+        pred = pred.ravel()
+        if sample_weight is None:
+            loss = np.sum(-y * pred + np.exp(pred) + constants)
+        else:
+            loss = np.sum((-y * pred + np.exp(pred) + constants)
+                            * sample_weight)
+        return loss
+
+    def negative_gradient(self, y, pred, sample_weight, **kargs):
+        return y - np.exp(pred.ravel())
+
+    def hessian(self, y, pred, residual, **kargs):
+        """Compute the second derivative """
+        return np.exp(pred.ravel())
+
+    def update_terminal_regions(self, tree, X, y, residual, y_pred,
+                                sample_weight, sample_mask,
+                                learning_rate=1.0, k=0, update_step="hybrid"):
+        """Update the terminal regions (=leaves) of the given tree and
+        updates the current predictions of the model. Traverses tree
+        and invokes template method `_update_terminal_region`.
+
+        Parameters
+        ----------
+        tree : tree.Tree
+            The tree object.
+        X : ndarray, shape=(n, m)
+            The data array.
+        y : ndarray, shape=(n,)
+            The target labels.
+        residual : ndarray, shape=(n,)
+            The residuals (usually the negative gradient).
+        y_pred : ndarray, shape=(n,)
+            The predictions.
+        sample_weight : ndarray, shape=(n,)
+            The weight of each sample.
+        sample_mask : ndarray, shape=(n,)
+            The sample mask to be used.
+        learning_rate : float, default=0.1
+            learning rate shrinks the contribution of each tree by
+             ``learning_rate``.
+        k : int, default 0
+            The index of the estimator being updated.
+
+        """
+        # compute leaf for each sample in ``X``.
+        terminal_regions = tree.apply(X)
+
+        if update_step=="hybrid":
+            # mask all which are not in sample mask.
+            masked_terminal_regions = terminal_regions.copy()
+            masked_terminal_regions[~sample_mask] = -1
+
+            # update each leaf (= perform line search)
+            for leaf in np.where(tree.children_left == TREE_LEAF)[0]:
+                self._update_terminal_region(tree, masked_terminal_regions,
+                                             leaf, X, y, residual,
+                                             y_pred[:, k], sample_weight)
+
+        # update predictions (both in-bag and out-of-bag)
+        y_pred[:, k] += (learning_rate
+                         * tree.value[:, 0, 0].take(terminal_regions, axis=0))
+        maxv=19*np.log(10)
+        y_pred[:, k][y_pred[:, k]>maxv]=maxv##Avoid overflow (1e-19 < exp(pred) < 1e19)
+        y_pred[:, k][y_pred[:, k]<-maxv]=-maxv 
+
+    def _update_terminal_region(self, tree, terminal_regions, leaf, X, y,
+                                residual, pred, sample_weight):
+        """Make a single Newton-Raphson step.
+        """
+        terminal_region = np.where(terminal_regions == leaf)[0]
+        residual = residual.take(terminal_region, axis=0)
+        sample_weight = sample_weight.take(terminal_region, axis=0)
+        pred = pred.take(terminal_region, axis=0)
+
+        numerator = np.sum(sample_weight * residual)
+        denominator = np.sum(sample_weight * np.exp(pred))
+
+        if abs(denominator) < 1e-150:
+            tree.value[leaf, 0] = 0.0
+        else:
+            tree.value[leaf, 0] = numerator / denominator
+
+
+class GammaLossFunction(RegressionLossFunction):
+    """Loss function for the Gamma model.
+
+    """
+
+    def __init__(self, n_classes, gamma=1):
+        super(GammaLossFunction, self).__init__(n_classes)
+        self.gamma = gamma
+
+    def init_estimator(self):
+        return LogMeanEstimator()
+
+    def __call__(self, y, pred, sample_weight=None):
+        
+        if self.gamma == 1:
+            constants = 0
+        else:
+            constants = (-(self.gamma-1) * np.log(y) + math.lgamma(self.gamma)
+                        - self.gamma * np.log(self.gamma))
+        pred = pred.ravel()
+        if sample_weight is None:
+            loss = np.sum(self.gamma * (pred + np.exp(-pred) * y) + constants)
+        else:
+            loss = np.sum((self.gamma * (pred + np.exp(-pred) * y) + constants)
+                            * sample_weight)
+        return loss
+
+    def negative_gradient(self, y, pred, sample_weight, **kargs):
+        return -self.gamma * (1 - np.exp(-pred.ravel()) * y)
+
+    def hessian(self, y, pred, residual, **kargs):
+        """Compute the second derivative """
+        return self.gamma * np.exp(-pred.ravel()) * y
+
+    def update_terminal_regions(self, tree, X, y, residual, y_pred,
+                                sample_weight, sample_mask,
+                                learning_rate=1.0, k=0, update_step="hybrid"):
+        """Update the terminal regions (=leaves) of the given tree and
+        updates the current predictions of the model. Traverses tree
+        and invokes template method `_update_terminal_region`.
+
+        Parameters
+        ----------
+        tree : tree.Tree
+            The tree object.
+        X : ndarray, shape=(n, m)
+            The data array.
+        y : ndarray, shape=(n,)
+            The target labels.
+        residual : ndarray, shape=(n,)
+            The residuals (usually the negative gradient).
+        y_pred : ndarray, shape=(n,)
+            The predictions.
+        sample_weight : ndarray, shape=(n,)
+            The weight of each sample.
+        sample_mask : ndarray, shape=(n,)
+            The sample mask to be used.
+        learning_rate : float, default=0.1
+            learning rate shrinks the contribution of each tree by
+             ``learning_rate``.
+        k : int, default 0
+            The index of the estimator being updated.
+
+        """
+        # compute leaf for each sample in ``X``.
+        terminal_regions = tree.apply(X)
+
+        if update_step=="hybrid":
+            # mask all which are not in sample mask.
+            masked_terminal_regions = terminal_regions.copy()
+            masked_terminal_regions[~sample_mask] = -1
+
+            # update each leaf (= perform line search)
+            for leaf in np.where(tree.children_left == TREE_LEAF)[0]:
+                self._update_terminal_region(tree, masked_terminal_regions,
+                                             leaf, X, y, residual,
+                                             y_pred[:, k], sample_weight)
+
+        # update predictions (both in-bag and out-of-bag)
+        y_pred[:, k] += (learning_rate
+                         * tree.value[:, 0, 0].take(terminal_regions, axis=0))
+        maxv=19*np.log(10)
+        y_pred[:, k][y_pred[:, k]>maxv]=maxv##Avoid overflow (1e-19 < exp(pred) < 1e19)
+        y_pred[:, k][y_pred[:, k]<-maxv]=-maxv
+
+    def _update_terminal_region(self, tree, terminal_regions, leaf, X, y,
+                                residual, pred, sample_weight):
+        """Make a single Newton-Raphson step.
+        """
+        terminal_region = np.where(terminal_regions == leaf)[0]
+        residual = residual.take(terminal_region, axis=0)
+        sample_weight = sample_weight.take(terminal_region, axis=0)
+        pred = pred.take(terminal_region, axis=0)
+        y_tr = y.take(terminal_region, axis=0)
+
+        numerator = np.sum(sample_weight * residual)
+        denominator = np.sum(sample_weight * self.gamma * np.exp(-pred) * y_tr)
+        
+        if abs(denominator) < 1e-150:
+            tree.value[leaf, 0] = 0.0
+        else:
+            tree.value[leaf, 0] = numerator / denominator
+            
 
 class ClassificationLossFunction(six.with_metaclass(ABCMeta, LossFunction)):
     """Base class for classification loss functions. """
@@ -713,6 +982,11 @@ class MultinomialDeviance(ClassificationLossFunction):
         return y - np.nan_to_num(np.exp(pred[:, k] -
                                         logsumexp(pred, axis=1)))
 
+    def hessian(self, y, pred, k=0, **kargs):
+        """Compute the second derivative """
+        p = np.nan_to_num(np.exp(pred[:, k] - logsumexp(pred, axis=1)))
+        return p * (1 - p)
+
     def _update_terminal_region(self, tree, terminal_regions, leaf, X, y,
                                 residual, pred, sample_weight):
         """Make a single Newton-Raphson step. """
@@ -722,7 +996,7 @@ class MultinomialDeviance(ClassificationLossFunction):
         sample_weight = sample_weight.take(terminal_region, axis=0)
 
         numerator = np.sum(sample_weight * residual)
-        numerator *= (self.K - 1) / self.K
+#        numerator *= (self.K - 1) / self.K
 
         denominator = np.sum(sample_weight * (y - residual) *
                              (1.0 - y + residual))
@@ -808,6 +1082,8 @@ LOSS_FUNCTIONS = {'ls': LeastSquaresError,
                   'deviance': None,    # for both, multinomial and binomial
                   'exponential': ExponentialLoss,
                   'tobit': TobitLossFunction,
+                  'poisson': PoissonLossFunction,
+                  'gamma': GammaLossFunction
                   }
 
 
@@ -874,13 +1150,12 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
     @abstractmethod
     def __init__(self, loss, learning_rate, n_estimators, criterion,
                  min_samples_split, min_samples_leaf, min_weight_fraction_leaf,
-                 max_depth, min_impurity_decrease, min_impurity_split,
-                 init, subsample, max_features,
+                 min_weight_leaf, max_depth, min_impurity_decrease, 
+                 min_impurity_split, init, subsample, max_features,
                  random_state, alpha=0.9, verbose=0, max_leaf_nodes=None,
-                 warm_start=False, presort='auto',
-                 validation_fraction=0.1, n_iter_no_change=None,
-                 tol=1e-4, sigma=1, yl=0, yu=1, NewtonWeights=True,
-                 NewtonBoost=False):
+                 warm_start=False, presort='auto', validation_fraction=0.1, 
+                 n_iter_no_change=None, tol=1e-4, sigma=1, yl=0, yu=1, 
+                 update_step="hybrid", gamma=1):
 
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
@@ -889,6 +1164,7 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
         self.min_weight_fraction_leaf = min_weight_fraction_leaf
+        self.min_weight_leaf=min_weight_leaf
         self.subsample = subsample
         self.max_features = max_features
         self.max_depth = max_depth
@@ -907,33 +1183,40 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
         self.sigma = sigma
         self.yl = yl
         self.yu = yu
-        self.NewtonWeights=NewtonWeights
-        self.NewtonBoost=NewtonBoost
+        self.update_step = update_step
+        self.gamma = gamma
 
     def _fit_stage(self, i, X, y, y_pred, sample_weight, sample_mask,
-                   random_state, X_idx_sorted, X_csc=None, X_csr=None,
-                   NewtonWeights=True, NewtonBoost=False):
+                   random_state, X_idx_sorted, X_csc=None, X_csr=None):
         """Fit another stage of ``n_classes_`` trees to the boosting model. """
 
         assert sample_mask.dtype == np.bool
         loss = self.loss_
         original_y = y
 
-        #No need to update weights if Newton-Raphson boosting is used
-        if NewtonBoost: NewtonWeights=False
-
         for k in range(loss.K):
+            weights = sample_weight.copy()##need to take a copy for the multiclass case with K>1 (otherwise the sample_weights get modified for increasing k...)
             if loss.is_multi_class:
                 y = np.array(original_y == k, dtype=np.float64)
 
             residual = loss.negative_gradient(y, y_pred, k=k,
                                               sample_weight=sample_weight)
-            if NewtonBoost:
-                hessian = loss.hessian(y, y_pred, residual, k=k,
-                                              sample_weight=sample_weight)
-                sample_weight = sample_weight * hessian/2
+            
+            if self.update_step=="newton":
+                hessian = loss.hessian(y=y, pred=y_pred, residual=residual, 
+                                       k=k, sample_weight=weights)
+                hessian[hessian < 1e-20] = 1e-20
+                weights = weights * hessian
                 residual = residual / hessian
+                weights = (weights / np.sum(weights) * len(weights))
 
+            if self.subsample < 1.0:
+                # no inplace multiplication!
+                weights = weights * sample_mask.astype(np.float64)
+            
+            if self.update_step=="newton":
+                self.min_weight_fraction_leaf = self.min_weight_leaf / np.sum(weights)
+            
             # induce regression tree on residuals
             tree = DecisionTreeRegressor(
                 criterion=self.criterion,
@@ -942,6 +1225,7 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
                 min_samples_split=self.min_samples_split,
                 min_samples_leaf=self.min_samples_leaf,
                 min_weight_fraction_leaf=self.min_weight_fraction_leaf,
+                min_weight_leaf=self.min_weight_leaf,
                 min_impurity_decrease=self.min_impurity_decrease,
                 min_impurity_split=self.min_impurity_split,
                 max_features=self.max_features,
@@ -949,28 +1233,24 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
                 random_state=random_state,
                 presort=self.presort)
 
-            if self.subsample < 1.0:
-                # no inplace multiplication!
-                sample_weight = sample_weight * sample_mask.astype(np.float64)
-
             if X_csc is not None:
-                tree.fit(X_csc, residual, sample_weight=sample_weight,
+                tree.fit(X_csc, residual, sample_weight=weights,
                          check_input=False, X_idx_sorted=X_idx_sorted)
             else:
-                tree.fit(X, residual, sample_weight=sample_weight,
+                tree.fit(X, residual, sample_weight=weights,
                          check_input=False, X_idx_sorted=X_idx_sorted)
 
             # update tree leaves ##CHANGE
             if X_csr is not None:
                 loss.update_terminal_regions(tree.tree_, X_csr, y, residual, y_pred,
-                                             sample_weight, sample_mask,
+                                             weights, sample_mask,
                                              self.learning_rate, k=k,
-                                             NewtonWeights=NewtonWeights)
+                                             update_step=self.update_step)
             else:
                 loss.update_terminal_regions(tree.tree_, X, y, residual, y_pred,
-                                             sample_weight, sample_mask,
+                                             weights, sample_mask,
                                              self.learning_rate, k=k,
-                                             NewtonWeights=NewtonWeights)
+                                             update_step=self.update_step)
 
             # add tree to ensemble
             self.estimators_[i, k] = tree
@@ -990,6 +1270,17 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
         if (self.loss not in self._SUPPORTED_LOSS
                 or self.loss not in LOSS_FUNCTIONS):
             raise ValueError("Loss '{0:s}' not supported. ".format(self.loss))
+        if ((self.loss in ('huber', 'quantile', 'lad')) 
+                and (self.update_step == "newton")):
+            raise ValueError("Newton updates for loss '{0:s}' not possible. ".format(self.loss))
+            
+        if ((self.loss in ('exponential')) 
+                and (self.update_step == "newton")):
+            raise ValueError("Newton updates for loss '{0:s}' currently not supported. ".format(self.loss))
+
+        if ((self.loss in ('ls')) 
+                and (self.update_step == "newton")):
+            raise ValueError("Newton updates for loss '{0:s}' not meaningfull since Hessian is constant. ".format(self.loss))
 
         if self.loss == 'deviance':
             loss_class = (MultinomialDeviance
@@ -1265,12 +1556,13 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
         n_inbag = max(1, int(self.subsample * n_samples))
         loss_ = self.loss_
 
-        # Set min_weight_leaf from min_weight_fraction_leaf
-        if self.min_weight_fraction_leaf != 0. and sample_weight is not None:
-            min_weight_leaf = (self.min_weight_fraction_leaf *
-                               np.sum(sample_weight))
-        else:
-            min_weight_leaf = 0.
+#        ##Comment: DELTE the following lines, min_weight_leaf is not used anymore
+#        # Set min_weight_leaf from min_weight_fraction_leaf
+#        if self.min_weight_fraction_leaf != 0. and sample_weight is not None:
+#            min_weight_leaf = (self.min_weight_fraction_leaf *
+#                               np.sum(sample_weight))
+#        else:
+#            min_weight_leaf = 0.
 
         if self.verbose:
             verbose_reporter = VerboseReporter(self.verbose)
@@ -1301,8 +1593,7 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
             # fit next stage of trees
             y_pred = self._fit_stage(i, X, y, y_pred, sample_weight,
                                      sample_mask, random_state, X_idx_sorted,
-                                     X_csc, X_csr, self.NewtonWeights,
-                                     self.NewtonBoost)
+                                     X_csc, X_csr)
 
             # track deviance (= loss)
             if do_oob:
@@ -1705,19 +1996,19 @@ class GradientBoostingClassifier(BaseGradientBoosting, ClassifierMixin):
     def __init__(self, loss='deviance', learning_rate=0.1, n_estimators=100,
                  subsample=1.0, criterion='friedman_mse', min_samples_split=2,
                  min_samples_leaf=1, min_weight_fraction_leaf=0.,
-                 max_depth=3, min_impurity_decrease=0.,
+                 min_weight_leaf=1., max_depth=3, min_impurity_decrease=0.,
                  min_impurity_split=None, init=None,
                  random_state=None, max_features=None, verbose=0,
                  max_leaf_nodes=None, warm_start=False,
                  presort='auto', validation_fraction=0.1,
-                 n_iter_no_change=None, tol=1e-4, NewtonWeights=True,
-                 NewtonBoost=False):
+                 n_iter_no_change=None, tol=1e-4, update_step="hybrid"):
 
         super(GradientBoostingClassifier, self).__init__(
             loss=loss, learning_rate=learning_rate, n_estimators=n_estimators,
             criterion=criterion, min_samples_split=min_samples_split,
             min_samples_leaf=min_samples_leaf,
             min_weight_fraction_leaf=min_weight_fraction_leaf,
+            min_weight_leaf=min_weight_leaf,
             max_depth=max_depth, init=init, subsample=subsample,
             max_features=max_features,
             random_state=random_state, verbose=verbose,
@@ -1727,7 +2018,7 @@ class GradientBoostingClassifier(BaseGradientBoosting, ClassifierMixin):
             warm_start=warm_start, presort=presort,
             validation_fraction=validation_fraction,
             n_iter_no_change=n_iter_no_change, tol=tol,
-            NewtonWeights=NewtonWeights, NewtonBoost=NewtonBoost)
+            update_step=update_step)
 
     def _validate_y(self, y, sample_weight):
         check_classification_targets(y)
@@ -2171,23 +2462,25 @@ class GradientBoostingRegressor(BaseGradientBoosting, RegressorMixin):
     Elements of Statistical Learning Ed. 2, Springer, 2009.
     """
 
-    _SUPPORTED_LOSS = ('ls', 'lad', 'huber', 'quantile', 'tobit')
+    _SUPPORTED_LOSS = ('ls', 'lad', 'huber', 'quantile', 'tobit', 'poisson',
+                       'gamma')
 
     def __init__(self, loss='ls', learning_rate=0.1, n_estimators=100,
                  subsample=1.0, criterion='friedman_mse', min_samples_split=2,
                  min_samples_leaf=1, min_weight_fraction_leaf=0.,
-                 max_depth=3, min_impurity_decrease=0.,
+                 min_weight_leaf=1., max_depth=3, min_impurity_decrease=0.,
                  min_impurity_split=None, init=None, random_state=None,
                  max_features=None, alpha=0.9, verbose=0, max_leaf_nodes=None,
                  warm_start=False, presort='auto', validation_fraction=0.1,
                  n_iter_no_change=None, tol=1e-4, sigma=1, yl=0, yu=1,
-                 NewtonWeights=True, NewtonBoost=False):
+                 update_step="hybrid", gamma=1):
 
         super(GradientBoostingRegressor, self).__init__(
             loss=loss, learning_rate=learning_rate, n_estimators=n_estimators,
             criterion=criterion, min_samples_split=min_samples_split,
             min_samples_leaf=min_samples_leaf,
             min_weight_fraction_leaf=min_weight_fraction_leaf,
+            min_weight_leaf=min_weight_leaf,
             max_depth=max_depth, init=init, subsample=subsample,
             max_features=max_features,
             min_impurity_decrease=min_impurity_decrease,
@@ -2196,7 +2489,7 @@ class GradientBoostingRegressor(BaseGradientBoosting, RegressorMixin):
             max_leaf_nodes=max_leaf_nodes, warm_start=warm_start,
             presort=presort, validation_fraction=validation_fraction,
             n_iter_no_change=n_iter_no_change, tol=tol, sigma=sigma,
-            yl=yl, yu=yu, NewtonWeights=NewtonWeights, NewtonBoost=NewtonBoost)
+            yl=yl, yu=yu, update_step=update_step, gamma=gamma)
 
     def predict(self, X):
         """Predict regression target for X.
