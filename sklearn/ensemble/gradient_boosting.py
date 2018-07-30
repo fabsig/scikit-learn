@@ -325,7 +325,8 @@ class LossFunction(six.with_metaclass(ABCMeta, object)):
              ``learning_rate``.
         k : int, default 0
             The index of the estimator being updated.
-
+        update_step : str, "hybrid"
+            Update step of boosting ("gradient", "hybrid", or "newton").
         """
         # compute leaf for each sample in ``X``.
         terminal_regions = tree.apply(X)
@@ -537,7 +538,8 @@ class QuantileLossFunction(RegressionLossFunction):
 class TobitLossFunction(RegressionLossFunction):
     """Loss function for the Tobit model.
 
-    The Tobit model is used, for instance, for modeling censored data.
+    The Tobit model is used, for instance, for modeling censored data or 
+    imbalance binary data with auxiliary data.
 
     References
     ----------
@@ -714,6 +716,8 @@ class PoissonLossFunction(RegressionLossFunction):
              ``learning_rate``.
         k : int, default 0
             The index of the estimator being updated.
+        update_step : str, "hybrid"
+            Update step of boosting ("gradient", "hybrid", or "newton").
 
         """
         # compute leaf for each sample in ``X``.
@@ -817,6 +821,8 @@ class GammaLossFunction(RegressionLossFunction):
              ``learning_rate``.
         k : int, default 0
             The index of the estimator being updated.
+        update_step : str, "hybrid"
+            Update step of boosting ("gradient", "hybrid", or "newton").
 
         """
         # compute leaf for each sample in ``X``.
@@ -1556,14 +1562,6 @@ class BaseGradientBoosting(six.with_metaclass(ABCMeta, BaseEnsemble)):
         n_inbag = max(1, int(self.subsample * n_samples))
         loss_ = self.loss_
 
-#        ##Comment: DELTE the following lines, min_weight_leaf is not used anymore
-#        # Set min_weight_leaf from min_weight_fraction_leaf
-#        if self.min_weight_fraction_leaf != 0. and sample_weight is not None:
-#            min_weight_leaf = (self.min_weight_fraction_leaf *
-#                               np.sum(sample_weight))
-#        else:
-#            min_weight_leaf = 0.
-
         if self.verbose:
             verbose_reporter = VerboseReporter(self.verbose)
             verbose_reporter.init(self, begin_at_stage)
@@ -1818,6 +1816,14 @@ class GradientBoostingClassifier(BaseGradientBoosting, ClassifierMixin):
         The minimum weighted fraction of the sum total of weights (of all
         the input samples) required to be at a leaf node. Samples have
         equal weight when sample_weight is not provided.
+        
+    min_weight_leaf : float, optional (default=0.)
+        The minimum weighted sum total of weights (of all the input samples) 
+        required to be at a leaf node. Samples have equal weight when 
+        sample_weight is not provided. For Newton boosting 
+        (update_step="newton"), this corresponds to the minimal sum of
+        weighted samples, where the weight is obtained as normalized Hessians,
+        see Sigrist (2018) for more details.
 
     subsample : float, optional (default=1.0)
         The fraction of samples to be used for fitting the individual base
@@ -2274,6 +2280,14 @@ class GradientBoostingRegressor(BaseGradientBoosting, RegressorMixin):
         The minimum weighted fraction of the sum total of weights (of all
         the input samples) required to be at a leaf node. Samples have
         equal weight when sample_weight is not provided.
+
+    min_weight_leaf : float, optional (default=0.)
+        The minimum weighted sum total of weights (of all the input samples) 
+        required to be at a leaf node. Samples have equal weight when 
+        sample_weight is not provided. For Newton boosting 
+        (update_step="newton"), this corresponds to the minimal sum of
+        weighted samples, where the weight is obtained as normalized Hessians,
+        see Sigrist (2018) for more details.
 
     subsample : float, optional (default=1.0)
         The fraction of samples to be used for fitting the individual base
