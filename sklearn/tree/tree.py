@@ -276,7 +276,7 @@ class BaseDecisionTree(six.with_metaclass(ABCMeta, BaseEstimator)):
                                    n_samples)
             else:
                 self.min_weight_leaf = (self.min_weight_fraction_leaf *
-                                   np.sum(sample_weight))
+                                    np.sum(sample_weight))
 
         if self.min_impurity_split is not None:
             warnings.warn("The min_impurity_split parameter is deprecated and"
